@@ -32,10 +32,16 @@ Answers render as markdown, live while they stream.
 ## Install
 
 ```bash
+pi install npm:@maxpaulus/pi-btw
+```
+
+Or straight from git:
+
+```bash
 pi install git:github.com/maxpaulus43/pi-btw
 ```
 
-Try it without installing:
+Try a checkout without installing:
 
 ```bash
 pi -e ./pi-btw
@@ -48,3 +54,14 @@ npm install
 npm test      # history storage tests
 npm run check # tsc --noEmit
 ```
+
+## Release
+
+```bash
+npx changelogger install   # once per clone, adds the pre-commit hook
+npm version patch
+git add -A && git commit -m "Release 0.1.1"
+git push
+```
+
+The pre-commit hook from `@maxpaulus/changelogger` writes the `CHANGELOG.md` entry for the new version. On push, `.github/workflows/publish.yml` runs the tests and typecheck, publishes to npm with provenance when the version differs from the published one, then tags and creates the GitHub release from that changelog entry.
