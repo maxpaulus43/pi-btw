@@ -22,12 +22,14 @@ Esc is the only way out: pi's overlay API gives an extension no signal for a cli
 
 Answers render as markdown, live while they stream.
 
+A finished btw is saved into the session as its own branch, labelled `btw`, forked where you asked it. So `/tree` shows it, and navigating there puts you inside that exchange while the main thread kept its own path.
+
 ## What it does
 
 - One model call per question. The whole conversation goes in as text, with long tool output cut down. No tools, so a btw can never change files.
 - Model: your current model, or a picker of your scoped models when you scope more than one.
 - Answers come from the conversation first; a little general knowledge is allowed when it helps.
-- Past btw's are saved per project in `~/.pi/agent/btw/<project>.jsonl`. Same directory shows the same list after `/new`.
+- Past btw's of the current session come from the session tree itself, so the up arrow list and `/tree` always agree. `/new` starts an empty list, and a stopped answer (esc before it finishes) is not saved.
 
 ## Install
 

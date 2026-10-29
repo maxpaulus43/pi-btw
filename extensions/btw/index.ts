@@ -3,18 +3,13 @@
  *
  * Opens a floating window over the transcript. The main agent keeps working.
  * Each btw is one model call with the conversation as text and no tools, so it
- * can look but never touch. Past btw's are kept per project.
+ * can look but never touch. A finished btw is saved into the session as its own
+ * branch, so it shows up in /tree and can be continued from there.
  */
 
-import { join } from "node:path";
-import { type Model, uuidv7, type UserMessage } from "@earendil-works/pi-ai";
+import { type AssistantMessage, type Message, type Model, uuidv7, type UserMessage } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionCommandContext, SessionEntry, Theme } from "@earendil-works/pi-coding-agent";
-import {
-	convertToLlm,
-	getAgentDir,
-	getMarkdownTheme,
-	serializeConversation,
-} from "@earendil-works/pi-coding-agent";
+import { convertToLlm, getMarkdownTheme, serializeConversation } from "@earendil-works/pi-coding-agent";
 import {
 	type Focusable,
 	Input,
@@ -27,7 +22,7 @@ import {
 	type TuiMouseEvent,
 	type TuiMouseEventResult,
 } from "@earendil-works/pi-tui";
-import { appendHistory, type BtwEntry, loadHistory, projectSlug } from "./store.ts";
+import { BTW_LABEL, type BtwEntry, btwHistory } from "./history.ts";
 
 const SYSTEM_PROMPT = `You answer side questions about a conversation another agent is having with a user. You see that conversation as text. You have no tools and you do not continue the main task.
 
@@ -64,12 +59,21 @@ async function pickModel(ctx: ExtensionCommandContext): Promise<Model<any> | und
 	return index >= 0 ? scoped[index]!.model : undefined;
 }
 
+/** The SessionManager write calls an extension needs. pi hands them over read-only typed. */
+interface TreeWriter {
+	getLeafId(): string | null;
+	branch(branchFromId: string): void;
+	appendMessage(message: Message): string;
+	appendLabelChange(targetId: string, label: string | undefined): string;
+}
+
 interface Options {
 	ctx: ExtensionCommandContext;
 	model: Model<any>;
-	file: string;
 	conversation: string;
 	entries: BtwEntry[];
+	/** Leaf the main conversation was at when /btw opened. */
+	branchFrom: string | null;
 	initial?: string;
 }
 
@@ -88,13 +92,13 @@ export default function (pi: ExtensionAPI) {
 				return;
 			}
 
-			const file = join(getAgentDir(), "btw", `${projectSlug(ctx.cwd)}.jsonl`);
+			const branchFrom = ctx.sessionManager.getLeafId();
 			const options: Options = {
 				ctx,
 				model,
-				file,
 				conversation: conversationText(ctx.sessionManager.getBranch()),
-				entries: loadHistory(file),
+				entries: btwHistory(ctx.sessionManager.getEntries()),
+				branchFrom,
 				initial: args.trim() || undefined,
 			};
 
@@ -266,7 +270,7 @@ class BtwWindow implements Focusable {
 		this.abort = controller;
 		this.tui.requestRender();
 
-		const message: UserMessage = {
+		const prompt: UserMessage = {
 			role: "user",
 			content: [
 				{ type: "text", text: `<conversation>\n${this.options.conversation}\n</conversation>\n\n${question}` },
@@ -277,7 +281,7 @@ class BtwWindow implements Focusable {
 		try {
 			const stream = this.options.ctx.modelRegistry.streamSimple(
 				this.options.model,
-				{ systemPrompt: SYSTEM_PROMPT, messages: [message] },
+				{ systemPrompt: SYSTEM_PROMPT, messages: [prompt] },
 				{ signal: controller.signal, cacheRetention: "none", sessionId: uuidv7() },
 			);
 
@@ -288,14 +292,42 @@ class BtwWindow implements Focusable {
 				} else if (event.type === "error") {
 					entry.a ||= event.error.errorMessage ?? `error (${event.reason})`;
 					break;
+				} else if (event.type === "done") {
+					this.saveBranch(question, event.message);
 				}
 			}
 		} catch (error) {
 			entry.a ||= `error: ${error instanceof Error ? error.message : String(error)}`;
 		} finally {
 			if (this.abort === controller) this.abort = undefined;
-			if (entry.a) appendHistory(this.options.file, entry);
 			this.tui.requestRender();
+		}
+	}
+
+	/**
+	 * Save a finished btw into the session as a sibling branch of the point it was asked at,
+	 * so /tree shows it and the main conversation keeps its own leaf. Synchronous on purpose:
+	 * the streaming main agent cannot append in the middle of it.
+	 */
+	private saveBranch(question: string, answer: AssistantMessage): void {
+		const tree = this.options.ctx.sessionManager as unknown as TreeWriter;
+		const live = tree.getLeafId();
+		const branchFrom = this.options.branchFrom;
+		if (!live || !branchFrom) return;
+
+		try {
+			tree.branch(branchFrom);
+			const questionId = tree.appendMessage({
+				role: "user",
+				content: [{ type: "text", text: question }],
+				timestamp: answer.timestamp,
+			});
+			tree.appendMessage(answer);
+			tree.appendLabelChange(questionId, BTW_LABEL);
+		} catch {
+			// The tree write failed; the answer is still on screen.
+		} finally {
+			tree.branch(live);
 		}
 	}
 }
